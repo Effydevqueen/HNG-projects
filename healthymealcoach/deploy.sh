@@ -112,24 +112,33 @@ else
 fi
 EOF
 
+
 # ========== CONFIGURE NGINX ==========
-log "Setting up Nginx reverse proxy..."
+log "Checking if port 80 is available..."
+if ssh -i "$SSH_KEY_PATH" "$SSH_USER@$SSH_HOST" "sudo lsof -i :80 | grep LISTEN" &>/dev/null; then
+    log "[WARN] Port 80 is already in use."
+    log "[WARN] Attempting to force release of port 80 (testing)..."
+    ssh -i "$SSH_KEY_PATH" "$SSH_USER@$SSH_HOST" "sudo fuser -k 80/tcp || true"
+    sleep 2
+fi
+
+log "[INFO] Setting up Nginx reverse proxy..."
 
 ssh -i "$SSH_KEY_PATH" "$SSH_USER@$SSH_HOST" bash << EOF
 set -e
+
+# Set up Nginx config
 NGINX_CONF="/etc/nginx/sites-available/healthymealcoach"
 NGINX_LINK="/etc/nginx/sites-enabled/healthymealcoach"
 
-# Check for port conflict
-if sudo lsof -i :80 | grep LISTEN >/dev/null; then
-    echo "Port 80 is already in use. Please free it and re-run."
-    exit 10
-fi
+# Remove default config to prevent conflict
+sudo rm -f /etc/nginx/sites-enabled/default
 
+# Create new config
 sudo tee \$NGINX_CONF > /dev/null << NGINXCONF
 server {
     listen 80;
-    server_name _;
+    server_name $SSH_HOST;
 
     location / {
         proxy_pass http://localhost:$APP_PORT;
@@ -141,8 +150,23 @@ server {
 NGINXCONF
 
 sudo ln -sf \$NGINX_CONF \$NGINX_LINK
-sudo nginx -t
-sudo systemctl reload nginx
+
+# Test Nginx config
+log "[INFO] Testing Nginx configuration..."
+if ! sudo nginx -t; then
+    echo "[ERROR] Nginx config test failed."
+    exit 1
+fi
+
+# Start or reload Nginx
+if ! sudo systemctl is-active --quiet nginx; then
+    echo "[INFO] Starting Nginx..."
+    sudo systemctl enable nginx
+    sudo systemctl start nginx
+else
+    echo "[INFO] Reloading Nginx..."
+    sudo systemctl reload nginx
+fi
 EOF
 
 # ========== VALIDATION ==========
